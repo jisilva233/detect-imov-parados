@@ -3,7 +3,7 @@ import plotly.express as px
 import pandas as pd
 from datetime import date
 
-from src.database import get_client, fetch_opportunities, save_opportunities
+from src.database import get_client, fetch_opportunities, save_opportunities, fetch_listings
 from src.analyzer import run_analysis
 
 st.set_page_config(
@@ -33,6 +33,54 @@ except Exception as exc:
 
 if "state" not in df.columns:
     df["state"] = "N/D"
+
+# ---------------------------------------------------------------------------
+# Sidebar — Coletar imóveis do Zap Imóveis
+# ---------------------------------------------------------------------------
+
+ZAP_CIDADES = {
+    "São Paulo / SP":         ("sp+sao-paulo",          "SP"),
+    "Rio de Janeiro / RJ":    ("rj+rio-de-janeiro",     "RJ"),
+    "Belo Horizonte / MG":   ("mg+belo-horizonte",      "MG"),
+    "Curitiba / PR":          ("pr+curitiba",            "PR"),
+    "Porto Alegre / RS":      ("rs+porto-alegre",        "RS"),
+    "Salvador / BA":          ("ba+salvador",            "BA"),
+    "Fortaleza / CE":         ("ce+fortaleza",           "CE"),
+    "Recife / PE":            ("pe+recife",              "PE"),
+    "Campinas / SP":          ("sp+campinas",            "SP"),
+    "Goiânia / GO":           ("go+goiania",             "GO"),
+}
+
+st.sidebar.title("🕷️ Coletar do Zap Imóveis")
+
+with st.sidebar.form("form_scraping", clear_on_submit=False):
+    cidade_zap = st.selectbox("Cidade", list(ZAP_CIDADES.keys()))
+    paginas = st.number_input("Páginas a coletar", min_value=1, max_value=20, value=3)
+    iniciar_scraping = st.form_submit_button("▶ Iniciar Coleta")
+
+if iniciar_scraping:
+    city_slug, state_slug = ZAP_CIDADES[cidade_zap]
+    with st.sidebar:
+        with st.spinner(f"Coletando imóveis de {cidade_zap}…"):
+            try:
+                import subprocess, sys
+                result = subprocess.run(
+                    [sys.executable, "scrape_and_analyze.py",
+                     "--city", city_slug,
+                     "--state", state_slug,
+                     "--pages", str(int(paginas))],
+                    capture_output=True, text=True, cwd="E:/Backup_HD/projetos-imoveis/detect-imov-parados"
+                )
+                if result.returncode == 0:
+                    st.sidebar.success(f"✅ Coleta de {cidade_zap} concluída!")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.sidebar.error(f"Erro: {result.stderr[-500:]}")
+            except Exception as exc:
+                st.sidebar.error(f"Erro na coleta: {exc}")
+
+st.sidebar.divider()
 
 # ---------------------------------------------------------------------------
 # Sidebar — Cadastrar novo imóvel
@@ -82,7 +130,7 @@ if submitted:
             "status":       "active",
         }).execute()
 
-        from src.database import fetch_listings
+
         listings = fetch_listings(client)
         opportunities = run_analysis(listings)
         save_opportunities(opportunities, client)

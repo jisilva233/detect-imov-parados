@@ -4,12 +4,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Supabase ---
-SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+# Tenta st.secrets (Streamlit Cloud) antes de cair no .env local
+def _get_secret(key: str, env_key: str) -> str:
+    try:
+        import streamlit as st
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(env_key, "")
+
+SUPABASE_URL: str = _get_secret("SUPABASE_URL", "SUPABASE_URL")
+SUPABASE_KEY: str = _get_secret("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise EnvironmentError(
-        "Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no arquivo .env"
+        "Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no arquivo .env ou nos secrets do Streamlit Cloud"
     )
 
 # --- Analysis thresholds ---

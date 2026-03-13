@@ -73,6 +73,7 @@ def generate_listings(n: int = 120) -> list[dict]:
     for i in range(1, n + 1):
         neighborhood = random.choice(NEIGHBORHOODS)
         listings.append({
+            "state":        "SP",
             "neighborhood": neighborhood,
             "price":        random_price(neighborhood),
             "photo_count":  random_photos(),
