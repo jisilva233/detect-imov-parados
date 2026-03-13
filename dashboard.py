@@ -56,6 +56,8 @@ st.sidebar.title("🕷️ Coletar do Zap Imóveis")
 with st.sidebar.form("form_scraping", clear_on_submit=False):
     cidade_zap = st.selectbox("Cidade", list(ZAP_CIDADES.keys()))
     paginas = st.number_input("Páginas a coletar", min_value=1, max_value=20, value=3)
+    buscar_data = st.checkbox("Buscar data real (mais lento)", value=False,
+                              help="Visita cada anúncio para extrair a data de publicação original")
     iniciar_scraping = st.form_submit_button("▶ Iniciar Coleta")
 
 if iniciar_scraping:
@@ -63,17 +65,22 @@ if iniciar_scraping:
     with st.sidebar:
         with st.spinner(f"Coletando imóveis de {cidade_zap}…"):
             try:
-                import subprocess, sys
+                import subprocess, sys, os
+                project_dir = os.path.dirname(os.path.abspath(__file__))
+                cmd = [sys.executable, "scrape_and_analyze.py",
+                       "--city", city_slug,
+                       "--state", state_slug,
+                       "--pages", str(int(paginas))]
+                if buscar_data:
+                    cmd.append("--fetch-date")
                 result = subprocess.run(
-                    [sys.executable, "scrape_and_analyze.py",
-                     "--city", city_slug,
-                     "--state", state_slug,
-                     "--pages", str(int(paginas))],
-                    capture_output=True, text=True, cwd="E:/Backup_HD/projetos-imoveis/detect-imov-parados"
+                    cmd,
+                    capture_output=True, text=True, cwd=project_dir
                 )
                 if result.returncode == 0:
                     st.sidebar.success(f"✅ Coleta de {cidade_zap} concluída!")
                     st.cache_data.clear()
+                    st.session_state["filter_state"] = state_slug
                     st.rerun()
                 else:
                     st.sidebar.error(f"Erro: {result.stderr[-500:]}")
@@ -171,7 +178,8 @@ st.sidebar.divider()
 st.sidebar.title("Filtros")
 
 all_states = sorted(s for s in df["state"].dropna().unique() if s in ESTADOS_BR)
-selected_states = st.sidebar.multiselect("Estado", all_states)
+default_states = [st.session_state["filter_state"]] if "filter_state" in st.session_state and st.session_state["filter_state"] in all_states else []
+selected_states = st.sidebar.multiselect("Estado", all_states, default=default_states)
 
 cities_in_states = sorted(
     df[df["state"].isin(selected_states)]["neighborhood"].dropna().unique()
@@ -179,6 +187,7 @@ cities_in_states = sorted(
 selected_neighborhoods = st.sidebar.multiselect("Cidade / Bairro", cities_in_states)
 
 only_stagnant = st.sidebar.checkbox("Somente imóveis parados (>120 dias)", value=False)
+only_with_link = st.sidebar.checkbox("Somente imóveis com link", value=False)
 
 min_score, max_score = st.sidebar.slider("Score de oportunidade", 0, 100, (0, 100))
 
@@ -198,6 +207,9 @@ else:
 filtered = filtered[filtered["opportunity_score"].between(min_score, max_score)]
 if only_stagnant:
     filtered = filtered[filtered["stagnant_listing"]]
+if only_with_link:
+    if "listing_url" in filtered.columns:
+        filtered = filtered[filtered["listing_url"].notna() & filtered["listing_url"].str.startswith("http", na=False)]
 
 # ---------------------------------------------------------------------------
 # KPIs
@@ -313,20 +325,34 @@ st.subheader("🔍 Detalhamento — Top Imóveis")
 if not filtered.empty:
     cols = ["id", "state", "neighborhood", "days_on_market", "photo_count", "price",
             "score_days", "score_photos", "score_price_premium",
-            "opportunity_score", "stagnant_listing"]
+            "opportunity_score", "stagnant_listing", "listing_url"]
+
+    # listing_url pode não existir em registros antigos
+    if "listing_url" not in filtered.columns:
+        filtered["listing_url"] = None
 
     detail = filtered.nlargest(int(top_n), "opportunity_score")[cols].copy()
-    detail["stagnant_listing"] = detail["stagnant_listing"].map({True: "⚠️ Parado", False: "✅ Ativo"})
+    detail["status_label"] = detail.apply(
+        lambda r: f"⚠️ Parado ({int(r['days_on_market'])} dias)" if r["stagnant_listing"]
+                  else f"✅ Ativo ({int(r['days_on_market'])} dias)",
+        axis=1,
+    )
     detail["price"] = detail["price"].apply(lambda v: f"R$ {v:,.0f}")
+    detail["listing_url"] = detail["listing_url"].apply(
+        lambda v: v if isinstance(v, str) and v.startswith("http") else None
+    )
 
     st.dataframe(
-        detail.rename(columns={
+        detail.drop(columns=["stagnant_listing", "days_on_market"]).rename(columns={
             "id": "ID", "state": "UF", "neighborhood": "Cidade",
-            "days_on_market": "Dias", "photo_count": "Fotos",
-            "price": "Preço", "score_days": "Score Tempo",
-            "score_photos": "Score Fotos", "score_price_premium": "Score Preço",
-            "opportunity_score": "Score Total", "stagnant_listing": "Status",
+            "photo_count": "Fotos", "price": "Preço",
+            "score_days": "Score Tempo", "score_photos": "Score Fotos",
+            "score_price_premium": "Score Preço", "opportunity_score": "Score Total",
+            "status_label": "Status", "listing_url": "Link",
         }),
         use_container_width=True,
         hide_index=True,
+        column_config={
+            "Link": st.column_config.LinkColumn("Link", display_text="🔗 Ver anúncio"),
+        },
     )

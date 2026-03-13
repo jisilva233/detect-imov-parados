@@ -58,13 +58,13 @@ def insert_new_listings(client, listings: list[dict]) -> int:
 # Pipeline principal
 # ---------------------------------------------------------------------------
 
-async def run_pipeline(city: str, state: str, max_pages: int) -> None:
+async def run_pipeline(city: str, state: str, max_pages: int, fetch_date: bool = False) -> None:
     print(f"\n{'='*55}")
     print(f"  Scraping: {city} ({state}) — até {max_pages} páginas")
     print(f"{'='*55}\n")
 
     # 1. Scraping
-    listings = await scrape_zap(city, state, max_pages)
+    listings = await scrape_zap(city, state, max_pages, fetch_date_from_page=fetch_date)
     if not listings:
         print("Nenhum anúncio coletado. Encerrando.")
         return
@@ -97,9 +97,10 @@ def _parse_args():
     )
     parser.add_argument("--state", default="SP", help="Sigla do estado (ex: SP)")
     parser.add_argument("--pages", type=int, default=5, help="Máximo de páginas")
+    parser.add_argument("--fetch-date", action="store_true", help="Visitar cada página para extrair data real (mais lento)")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    asyncio.run(run_pipeline(args.city, args.state, args.pages))
+    asyncio.run(run_pipeline(args.city, args.state, args.pages, fetch_date=args.fetch_date))

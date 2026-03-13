@@ -12,7 +12,7 @@ def fetch_listings(client: Client) -> pd.DataFrame:
     """Load active listings from property_listings."""
     response = (
         client.table("property_listings")
-        .select("id, state, neighborhood, price, photo_count, listed_at, status")
+        .select("id, state, neighborhood, price, photo_count, listed_at, status, listing_url")
         .eq("status", "active")
         .execute()
     )

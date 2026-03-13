@@ -73,6 +73,10 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
     df = flag_stagnant(df)
     df = calculate_opportunity_score(df)
 
+    # listing_url pode não existir em registros sem scraping
+    if "listing_url" not in df.columns:
+        df["listing_url"] = None
+
     output_cols = [
         "id",
         "state",
@@ -86,5 +90,6 @@ def run_analysis(df: pd.DataFrame) -> pd.DataFrame:
         "score_days",
         "score_photos",
         "score_price_premium",
+        "listing_url",
     ]
     return df[output_cols]

@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 import re
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from playwright.async_api import async_playwright, Page, ElementHandle
@@ -28,6 +28,12 @@ SELECTORS = {
     "photos_count":   "[data-testid='photos-count']",
     "link":           "a[data-testid='listing-card-anchor']",
     "next_page":      "[data-testid='next-page']",
+    # Seletores de data — tentados em ordem
+    "date_card":      "[data-testid='listing-date']",
+    "date_published": "[data-testid='published-date']",
+    "date_time":      "time",
+    # Data na página de detalhe
+    "date_detail":    "[data-testid='listing-date'], time, .date-published, [class*='date']",
 }
 
 BASE_URL = "https://www.zapimoveis.com.br/venda/imoveis/{city}/?pagina={page}"
@@ -41,6 +47,7 @@ async def scrape_zap(
     city: str,
     state: str,
     max_pages: int = 10,
+    fetch_date_from_page: bool = False,
 ) -> list[dict]:
     """
     Coleta anúncios do Zap Imóveis para a cidade informada.
@@ -85,7 +92,7 @@ async def scrape_zap(
                 break
 
             for card in cards:
-                listing = await _extract_card(card, state)
+                listing = await _extract_card(card, state, context if fetch_date_from_page else None)
                 if listing:
                     listings.append(listing)
 
@@ -107,18 +114,18 @@ async def scrape_zap(
 # Extração de um card
 # ---------------------------------------------------------------------------
 
-async def _extract_card(card: ElementHandle, state: str) -> Optional[dict]:
+async def _extract_card(card: ElementHandle, state: str, context=None) -> Optional[dict]:
     """Extrai dados de um card de anúncio e retorna dict ou None."""
     try:
-        title       = await _safe_text(card, SELECTORS["title"])
-        price_text  = await _safe_text(card, SELECTORS["price"])
+        title        = await _safe_text(card, SELECTORS["title"])
+        price_text   = await _safe_text(card, SELECTORS["price"])
         neighborhood = await _safe_text(card, SELECTORS["neighborhood"])
-        photos_text = await _safe_text(card, SELECTORS["photos_count"])
-        link_el     = await card.query_selector(SELECTORS["link"])
-        link        = await link_el.get_attribute("href") if link_el else None
+        photos_text  = await _safe_text(card, SELECTORS["photos_count"])
+        link_el      = await card.query_selector(SELECTORS["link"])
+        link         = await link_el.get_attribute("href") if link_el else None
 
-        price       = _parse_price(price_text)
-        photos      = _parse_int(photos_text)
+        price  = _parse_price(price_text)
+        photos = _parse_int(photos_text)
 
         if not link or price is None:
             return None
@@ -131,12 +138,29 @@ async def _extract_card(card: ElementHandle, state: str) -> Optional[dict]:
         # Bairro vem como "Bairro - Cidade, UF" → pegar só o bairro
         neighborhood_clean = neighborhood.split(" - ")[0].strip() if neighborhood else ""
 
+        # Tentar extrair data do card
+        listed_at = None
+        for sel in ["date_card", "date_published", "date_time"]:
+            date_text = await _safe_text(card, SELECTORS[sel])
+            if date_text:
+                listed_at = _parse_date(date_text)
+                if listed_at:
+                    break
+
+        # Fallback: visitar página do anúncio para buscar data real
+        if listed_at is None and context is not None:
+            listed_at = await _fetch_date_from_page(context, link)
+
+        # Último fallback: data de hoje
+        if listed_at is None:
+            listed_at = datetime.now().date()
+
         return {
             "state":        state.upper(),
             "neighborhood": neighborhood_clean or neighborhood,
             "price":        price,
             "photo_count":  photos or 0,
-            "listed_at":    datetime.now().date().isoformat(),
+            "listed_at":    listed_at.isoformat() if hasattr(listed_at, "isoformat") else str(listed_at),
             "status":       "active",
             "listing_url":  link,
             "source":       "zap",
@@ -145,6 +169,38 @@ async def _extract_card(card: ElementHandle, state: str) -> Optional[dict]:
     except Exception as exc:
         print(f"[ZAP] Erro ao extrair card: {exc}")
         return None
+
+
+async def _fetch_date_from_page(context, url: str) -> Optional[datetime.date]:
+    """Abre a página do anúncio e tenta extrair a data de publicação."""
+    try:
+        detail_page = await context.new_page()
+        await detail_page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+
+        # Tenta múltiplos seletores de data
+        for selector in [
+            "[data-testid='listing-date']",
+            "time",
+            "[class*='PublishedDate']",
+            "[class*='date']",
+        ]:
+            try:
+                el = await detail_page.query_selector(selector)
+                if el:
+                    # Tenta atributo datetime primeiro
+                    dt_attr = await el.get_attribute("datetime")
+                    text = dt_attr or (await el.text_content() or "").strip()
+                    parsed = _parse_date(text)
+                    if parsed:
+                        await detail_page.close()
+                        return parsed
+            except Exception:
+                continue
+
+        await detail_page.close()
+    except Exception as exc:
+        print(f"[ZAP] Erro ao buscar data na página {url}: {exc}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +227,49 @@ def _parse_price(text: str) -> Optional[float]:
 def _parse_int(text: str) -> Optional[int]:
     match = re.search(r"\d+", text or "")
     return int(match.group()) if match else None
+
+
+def _parse_date(text: str) -> Optional[datetime.date]:
+    """
+    Tenta parsear data de anúncio em vários formatos:
+    - 'há 30 dias', 'há 2 semanas', 'há 1 mês'
+    - '15/03/2024', '2024-03-15'
+    - ISO 8601: '2024-03-15T00:00:00'
+    """
+    if not text:
+        return None
+    text = text.strip().lower()
+
+    # Formato relativo: "há X dias/semanas/meses"
+    m = re.search(r"h[aá]\s+(\d+)\s+(dia|semana|m[eê]s|ano)", text)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        if "dia" in unit:
+            return (datetime.now() - timedelta(days=n)).date()
+        if "semana" in unit:
+            return (datetime.now() - timedelta(weeks=n)).date()
+        if "m" in unit:
+            return (datetime.now() - timedelta(days=n * 30)).date()
+        if "ano" in unit:
+            return (datetime.now() - timedelta(days=n * 365)).date()
+
+    # Formato DD/MM/YYYY
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    if m:
+        try:
+            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1))).date()
+        except ValueError:
+            pass
+
+    # Formato ISO YYYY-MM-DD
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            pass
+
+    return None
 
 
 # ---------------------------------------------------------------------------
